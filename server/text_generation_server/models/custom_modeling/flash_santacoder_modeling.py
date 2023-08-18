@@ -5,13 +5,11 @@ from torch import nn
 from transformers.activations import ACT2FN
 from typing import Optional, List, Tuple
 
-# Flash attention imports
-import flash_attn_cuda
-
 # vllm imports
 import vllm_cache_ops
 import vllm_attention_ops
 
+from text_generation_server.utils.flash_attn import attention
 from text_generation_server.utils.layers import (
     TensorParallelRowLinear,
     TensorParallelColumnLinear,
@@ -52,6 +50,7 @@ def _load_multi_mqa_gptq(
         q_tensor = slice_[:, start:stop]
         kv_tensor = slice_[:, -2 * head_size :]
         qweight = torch.cat([q_tensor, kv_tensor], dim=1)
+        qweight = qweight.to(device=weights.device)
 
         slice_ = weights._get_slice(f"{prefix}.c_attn.scales")
         shape = slice_.get_shape()
@@ -62,6 +61,7 @@ def _load_multi_mqa_gptq(
         q_tensor = slice_[:, start:stop]
         kv_tensor = slice_[:, -2 * head_size :]
         scales = torch.cat([q_tensor, kv_tensor], dim=1)
+        scales = scales.to(device=weights.device)
 
         slice_ = weights._get_slice(f"{prefix}.c_attn.qzeros")
         shape = slice_.get_shape()
@@ -72,21 +72,16 @@ def _load_multi_mqa_gptq(
         q_tensor = slice_[:, start:stop]
         kv_tensor = slice_[:, -2 * head_size * 4 // 32 :]
         qzeros = torch.cat([q_tensor, kv_tensor], dim=1)
+        qzeros = qzeros.to(device=weights.device)
 
         g_idx = weights.get_tensor(f"{prefix}.c_attn.g_idx")
-        try:
-            bits = weights.get_tensor("gptq_bits").item()
-            groupsize = weights.get_tensor("gptq_groupsize").item()
-        except SafetensorError as e:
-            try:
-                import os
+        g_idx = g_idx.to(device=weights.device)
+        bits, groupsize = weights._get_gptq_params()
 
-                bits = int(os.getenv("GPTQ_BITS"))
-                groupsize = int(os.getenv("GPTQ_GROUPSIZE"))
-            except Exception:
-                raise e
+        from text_generation_server.utils.layers import HAS_EXLLAMA
 
-        weight = (qweight, qzeros, scales, g_idx, bits, groupsize)
+        use_exllama = HAS_EXLLAMA
+        weight = (qweight, qzeros, scales, g_idx, bits, groupsize, use_exllama)
 
         if bias:
             slice_ = weights._get_slice(f"{prefix}.c_attn.bias")
@@ -99,6 +94,7 @@ def _load_multi_mqa_gptq(
             q_tensor = slice_[start:stop]
             kv_tensor = slice_[-2 * head_size :]
             bias = torch.cat([q_tensor, kv_tensor], dim=0)
+            bias = bias.to(device=weights.device)
 
         return TensorParallelColumnLinear(get_linear(weight, bias, config.quantize))
     else:
@@ -271,26 +267,15 @@ class FlashMQAttention(torch.nn.Module):
 
         # Prefill
         if cu_seqlen_prefill is not None:
-            # Expand from 1 to num_heads
-            key_value = key_value.expand(-1, 2, self.num_heads, self.head_size)
-
             # flash attention
-            flash_attn_cuda.fwd(
+            attention(
                 query,
                 torch.select(key_value, dim=1, index=0),
                 torch.select(key_value, dim=1, index=1),
                 attn_output,
                 cu_seqlen_prefill,
-                cu_seqlen_prefill,
                 max_s,
-                max_s,
-                0.0,
                 self.softmax_scale,
-                False,
-                True,
-                False,
-                0,
-                None,
             )
         # Decode
         else:
@@ -374,7 +359,6 @@ class Block(nn.Module):
         max_s,
     ):
         hidden_states, residual = self.ln_1(hidden_states, residual)
-
         hidden_states = self.attn(
             hidden_states,
             cu_seqlen_prefill,

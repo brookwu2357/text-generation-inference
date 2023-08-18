@@ -27,13 +27,11 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.models.gpt_neox import GPTNeoXConfig
 from typing import Optional, List, Tuple
 
-# Flash attention imports
-import flash_attn_cuda
-
 # vllm imports
 import vllm_cache_ops
 import vllm_attention_ops
 
+from text_generation_server.utils.flash_attn import attention
 from text_generation_server.utils.layers import (
     TensorParallelRowLinear,
     TensorParallelColumnLinear,
@@ -104,7 +102,7 @@ class FlashNeoxAttention(torch.nn.Module):
         self.num_heads = self.num_heads // weights.process_group.size()
 
         self.rotary_emb = PositionRotaryEmbedding.load(
-            prefix=f"{prefix}.rotary_emb", weights=weights
+            config=config, prefix=f"{prefix}.rotary_emb", weights=weights
         )
 
         self.softmax_scale = self.head_size ** (-0.5)
@@ -153,22 +151,14 @@ class FlashNeoxAttention(torch.nn.Module):
         # Prefill
         if cu_seqlen_prefill is not None:
             # flash attention
-            flash_attn_cuda.fwd(
+            attention(
                 qkv[:, 0],
                 qkv[:, 1],
                 qkv[:, 2],
                 attn_output,
                 cu_seqlen_prefill,
-                cu_seqlen_prefill,
                 max_s,
-                max_s,
-                0.0,
                 self.softmax_scale,
-                False,
-                True,
-                False,
-                0,
-                None,
             )
         # Decode
         else:

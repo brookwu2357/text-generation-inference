@@ -42,51 +42,22 @@ __all__ = [
     "get_model",
 ]
 
-FLASH_ATT_ERROR_MESSAGE = (
-    "{} requires CUDA and Flash Attention kernels to be installed.\n"
-    "Use the official Docker image (ghcr.io/huggingface/text-generation-inference:latest) "
-    "or install flash attention with `cd server && make install install-flash-attention`"
-)
+FLASH_ATT_ERROR_MESSAGE = "{} requires Flash Attention enabled models."
 
+FLASH_ATTENTION = True
 try:
-    if not os.getenv("USE_FLASH_ATTENTION", "").lower() == "false":
-        if not torch.cuda.is_available():
-            FLASH_ATT_ERROR_MESSAGE = (
-                "{} requires CUDA. No compatible CUDA devices found."
-            )
-            raise ImportError("CUDA is not available")
-
-        major, minor = torch.cuda.get_device_capability()
-        is_sm75 = major == 7 and minor == 5
-        is_sm8x = major == 8 and minor >= 0
-        is_sm90 = major == 9 and minor == 0
-
-        supported = is_sm75 or is_sm8x or is_sm90
-        if not supported:
-            FLASH_ATT_ERROR_MESSAGE = (
-                "{} requires a CUDA device with capability 7.5, > 8.0 or 9.0. "
-                "No compatible CUDA device found."
-            )
-            raise ImportError(
-                f"GPU with CUDA capability {major} {minor} is not supported"
-            )
-
-        from text_generation_server.models.flash_rw import FlashRWSharded
-        from text_generation_server.models.flash_neox import FlashNeoXSharded
-        from text_generation_server.models.flash_llama import (
-            FlashLlama,
-        )
-        from text_generation_server.models.flash_santacoder import (
-            FlashSantacoderSharded,
-        )
-
-        FLASH_ATTENTION = True
-    else:
-        FLASH_ATTENTION = False
-except ImportError:
-    logger.opt(exception=True).warning(
-        "Could not import Flash Attention enabled models"
+    from text_generation_server.models.flash_rw import FlashRWSharded
+    from text_generation_server.models.flash_neox import FlashNeoXSharded
+    from text_generation_server.models.flash_llama import (
+        FlashLlama,
     )
+    from text_generation_server.models.flash_santacoder import (
+        FlashSantacoderSharded,
+    )
+    from text_generation_server.models.idefics import IDEFICSSharded
+
+except ImportError as e:
+    logger.warning(f"Could not import Flash Attention enabled models: {e}")
     FLASH_ATTENTION = False
 
 if FLASH_ATTENTION:
@@ -94,6 +65,7 @@ if FLASH_ATTENTION:
     __all__.append(FlashRWSharded)
     __all__.append(FlashSantacoderSharded)
     __all__.append(FlashLlama)
+    __all__.append(IDEFICSSharded)
 
 
 def get_model(
@@ -119,7 +91,7 @@ def get_model(
             revision,
             quantize=quantize,
             dtype=dtype,
-            dtypetrust_remote_code=trust_remote_code,
+            trust_remote_code=trust_remote_code,
         )
 
     if model_id.startswith("bigcode/"):
@@ -230,13 +202,10 @@ def get_model(
                 trust_remote_code=trust_remote_code,
             )
 
-    if model_type in ["RefinedWeb", "RefinedWebModel"]:
+    if model_type in ["RefinedWeb", "RefinedWebModel", "falcon"]:
         if sharded:
             if FLASH_ATTENTION:
-                if config_dict.get("alibi", False) or (
-                    model_type == "RefinedWebModel"
-                    and config_dict.get("multi_query", True)
-                ):
+                if config_dict.get("alibi", False):
                     raise NotImplementedError("sharded is not supported for this model")
                 return FlashRWSharded(
                     model_id,
@@ -245,9 +214,7 @@ def get_model(
                     dtype=dtype,
                     trust_remote_code=trust_remote_code,
                 )
-            raise NotImplementedError(
-                FLASH_ATT_ERROR_MESSAGE.format(f"Sharded RefinedWeb")
-            )
+            raise NotImplementedError(FLASH_ATT_ERROR_MESSAGE.format(f"Sharded Falcon"))
         else:
             if FLASH_ATTENTION and not config_dict.get("alibi", False):
                 return FlashRWSharded(
@@ -283,6 +250,17 @@ def get_model(
             dtype=dtype,
             trust_remote_code=trust_remote_code,
         )
+    elif model_type == "idefics":
+        if FLASH_ATTENTION:
+           return IDEFICSSharded(
+               model_id,
+               revision,
+               quantize=quantize,
+               dtype=dtype,
+               trust_remote_code=trust_remote_code,
+           )
+        else:
+            raise NotImplementedError(FLASH_ATT_ERROR_MESSAGE.format("Idefics"))
 
     if sharded:
         raise ValueError("sharded is not supported for AutoModel")
@@ -290,7 +268,10 @@ def get_model(
         raise ValueError(
             "gptq quantization is not supported for AutoModel, you can try to quantize it with `text-generation-server quantize ORIGINAL_MODEL_ID NEW_MODEL_ID`"
         )
-
+    elif (quantize == "bitsandbytes-fp4") or (quantize == "bitsandbytes-nf4"):
+        raise ValueError(
+            "4bit quantization is not supported for AutoModel"
+        )
     if model_type in modeling_auto.MODEL_FOR_CAUSAL_LM_MAPPING_NAMES:
         return CausalLM(
             model_id,

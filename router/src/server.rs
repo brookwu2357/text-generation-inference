@@ -32,37 +32,35 @@ use utoipa_swagger_ui::SwaggerUi;
 
 /// Generate tokens if `stream == false` or a stream of token if `stream == true`
 #[utoipa::path(
-    post,
-    tag = "Text Generation Inference",
-    path = "/",
-    request_body = CompatGenerateRequest,
-    responses(
-        (status = 200, description = "Generated Text",
-            content(
-                ("application/json" = GenerateResponse),
-                ("text/event-stream" = StreamResponse),
-            )),
-        (status = 424, description = "Generation Error", body = ErrorResponse,
-            example = json ! ({"error": "Request failed during generation"})),
-        (status = 429, description = "Model is overloaded", body = ErrorResponse,
-            example = json ! ({"error": "Model is overloaded"})),
-        (status = 422, description = "Input validation error", body = ErrorResponse,
-            example = json ! ({"error": "Input validation error"})),
-        (status = 500, description = "Incomplete generation", body = ErrorResponse,
-            example = json ! ({"error": "Incomplete generation"})),
-    )
+post,
+tag = "Text Generation Inference",
+path = "/",
+request_body = CompatGenerateRequest,
+responses(
+(status = 200, description = "Generated Text",
+content(
+("application/json" = GenerateResponse),
+("text/event-stream" = StreamResponse),
+)),
+(status = 424, description = "Generation Error", body = ErrorResponse,
+example = json ! ({"error": "Request failed during generation"})),
+(status = 429, description = "Model is overloaded", body = ErrorResponse,
+example = json ! ({"error": "Model is overloaded"})),
+(status = 422, description = "Input validation error", body = ErrorResponse,
+example = json ! ({"error": "Input validation error"})),
+(status = 500, description = "Incomplete generation", body = ErrorResponse,
+example = json ! ({"error": "Incomplete generation"})),
+)
 )]
 #[instrument(skip(infer, req))]
 async fn compat_generate(
-    default_return_full_text: Extension<bool>,
+    Extension(default_return_full_text): Extension<bool>,
     infer: Extension<Infer>,
-    req: Json<CompatGenerateRequest>,
+    Json(mut req): Json<CompatGenerateRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let mut req = req.0;
-
     // default return_full_text given the pipeline_tag
     if req.parameters.return_full_text.is_none() {
-        req.parameters.return_full_text = Some(default_return_full_text.0)
+        req.parameters.return_full_text = Some(default_return_full_text)
     }
 
     // switch on stream
@@ -71,18 +69,18 @@ async fn compat_generate(
             .await
             .into_response())
     } else {
-        let (headers, generation) = generate(infer, Json(req.into())).await?;
+        let (headers, Json(generation)) = generate(infer, Json(req.into())).await?;
         // wrap generation inside a Vec to match api-inference
-        Ok((headers, Json(vec![generation.0])).into_response())
+        Ok((headers, Json(vec![generation])).into_response())
     }
 }
 
 /// Text Generation Inference endpoint info
 #[utoipa::path(
-    get,
-    tag = "Text Generation Inference",
-    path = "/info",
-    responses((status = 200, description = "Served model info", body = Info))
+get,
+tag = "Text Generation Inference",
+path = "/info",
+responses((status = 200, description = "Served model info", body = Info))
 )]
 #[instrument]
 async fn get_model_info(info: Extension<Info>) -> Json<Info> {
@@ -90,14 +88,14 @@ async fn get_model_info(info: Extension<Info>) -> Json<Info> {
 }
 
 #[utoipa::path(
-    get,
-    tag = "Text Generation Inference",
-    path = "/health",
-    responses(
-        (status = 200, description = "Everything is working fine"),
-        (status = 503, description = "Text generation inference is down", body = ErrorResponse,
-            example = json ! ({"error": "unhealthy", "error_type": "healthcheck"})),
-    )
+get,
+tag = "Text Generation Inference",
+path = "/health",
+responses(
+(status = 200, description = "Everything is working fine"),
+(status = 503, description = "Text generation inference is down", body = ErrorResponse,
+example = json ! ({"error": "unhealthy", "error_type": "healthcheck"})),
+)
 )]
 #[instrument(skip(health))]
 /// Health check method
@@ -116,59 +114,59 @@ async fn health(mut health: Extension<Health>) -> Result<(), (StatusCode, Json<E
 
 /// Generate tokens
 #[utoipa::path(
-    post,
-    tag = "Text Generation Inference",
-    path = "/generate",
-    request_body = GenerateRequest,
-    responses(
-        (status = 200, description = "Generated Text", body = GenerateResponse),
-        (status = 424, description = "Generation Error", body = ErrorResponse,
-            example = json ! ({"error": "Request failed during generation"})),
-        (status = 429, description = "Model is overloaded", body = ErrorResponse,
-            example = json ! ({"error": "Model is overloaded"})),
-        (status = 422, description = "Input validation error", body = ErrorResponse,
-            example = json ! ({"error": "Input validation error"})),
-        (status = 500, description = "Incomplete generation", body = ErrorResponse,
-            example = json ! ({"error": "Incomplete generation"})),
-    )
+post,
+tag = "Text Generation Inference",
+path = "/generate",
+request_body = GenerateRequest,
+responses(
+(status = 200, description = "Generated Text", body = GenerateResponse),
+(status = 424, description = "Generation Error", body = ErrorResponse,
+example = json ! ({"error": "Request failed during generation"})),
+(status = 429, description = "Model is overloaded", body = ErrorResponse,
+example = json ! ({"error": "Model is overloaded"})),
+(status = 422, description = "Input validation error", body = ErrorResponse,
+example = json ! ({"error": "Input validation error"})),
+(status = 500, description = "Incomplete generation", body = ErrorResponse,
+example = json ! ({"error": "Incomplete generation"})),
+)
 )]
 #[instrument(
-    skip_all,
-    fields(
-        parameters = ?req.0.parameters,
-        total_time,
-        validation_time,
-        queue_time,
-        inference_time,
-        time_per_token,
-        seed,
-    )
+skip_all,
+fields(
+parameters = ? req.parameters,
+total_time,
+validation_time,
+queue_time,
+inference_time,
+time_per_token,
+seed,
+)
 )]
 async fn generate(
     infer: Extension<Infer>,
-    req: Json<GenerateRequest>,
+    Json(req): Json<GenerateRequest>,
 ) -> Result<(HeaderMap, Json<GenerateResponse>), (StatusCode, Json<ErrorResponse>)> {
     let span = tracing::Span::current();
     let start_time = Instant::now();
     metrics::increment_counter!("tgi_request_count");
 
-    tracing::debug!("Input: {}", req.0.inputs);
+    tracing::debug!("Input: {}", req.inputs);
 
-    let compute_characters = req.0.inputs.chars().count();
+    let compute_characters = req.inputs.chars().count();
     let mut add_prompt = None;
-    if req.0.parameters.return_full_text.unwrap_or(false) {
-        add_prompt = Some(req.0.inputs.clone());
+    if req.parameters.return_full_text.unwrap_or(false) {
+        add_prompt = Some(req.inputs.clone());
     }
 
-    let details = req.0.parameters.details || req.0.parameters.decoder_input_details;
+    let details = req.parameters.details || req.parameters.decoder_input_details;
 
     // Inference
-    let (response, best_of_responses) = match req.0.parameters.best_of {
+    let (response, best_of_responses) = match req.parameters.best_of {
         Some(best_of) if best_of > 1 => {
-            let (response, best_of_responses) = infer.generate_best_of(req.0, best_of).await?;
+            let (response, best_of_responses) = infer.generate_best_of(req, best_of).await?;
             (response, Some(best_of_responses))
         }
-        _ => (infer.generate(req.0).await?, None),
+        _ => (infer.generate(req).await?, None),
     };
 
     // Token details
@@ -297,42 +295,42 @@ async fn generate(
 
 /// Generate a stream of token using Server-Sent Events
 #[utoipa::path(
-    post,
-    tag = "Text Generation Inference",
-    path = "/generate_stream",
-    request_body = GenerateRequest,
-    responses(
-        (status = 200, description = "Generated Text", body = StreamResponse,
-            content_type = "text/event-stream"),
-        (status = 424, description = "Generation Error", body = ErrorResponse,
-            example = json ! ({"error": "Request failed during generation"}),
-            content_type = "text/event-stream"),
-        (status = 429, description = "Model is overloaded", body = ErrorResponse,
-            example = json ! ({"error": "Model is overloaded"}),
-            content_type = "text/event-stream"),
-        (status = 422, description = "Input validation error", body = ErrorResponse,
-            example = json ! ({"error": "Input validation error"}),
-            content_type = "text/event-stream"),
-        (status = 500, description = "Incomplete generation", body = ErrorResponse,
-            example = json ! ({"error": "Incomplete generation"}),
-            content_type = "text/event-stream"),
-    )
+post,
+tag = "Text Generation Inference",
+path = "/generate_stream",
+request_body = GenerateRequest,
+responses(
+(status = 200, description = "Generated Text", body = StreamResponse,
+content_type = "text/event-stream"),
+(status = 424, description = "Generation Error", body = ErrorResponse,
+example = json ! ({"error": "Request failed during generation"}),
+content_type = "text/event-stream"),
+(status = 429, description = "Model is overloaded", body = ErrorResponse,
+example = json ! ({"error": "Model is overloaded"}),
+content_type = "text/event-stream"),
+(status = 422, description = "Input validation error", body = ErrorResponse,
+example = json ! ({"error": "Input validation error"}),
+content_type = "text/event-stream"),
+(status = 500, description = "Incomplete generation", body = ErrorResponse,
+example = json ! ({"error": "Incomplete generation"}),
+content_type = "text/event-stream"),
+)
 )]
 #[instrument(
-    skip_all,
-    fields(
-        parameters = ?req.0.parameters,
-        total_time,
-        validation_time,
-        queue_time,
-        inference_time,
-        time_per_token,
-        seed,
-    )
+skip_all,
+fields(
+parameters = ? req.parameters,
+total_time,
+validation_time,
+queue_time,
+inference_time,
+time_per_token,
+seed,
+)
 )]
 async fn generate_stream(
-    infer: Extension<Infer>,
-    req: Json<GenerateRequest>,
+    Extension(infer): Extension<Infer>,
+    Json(req): Json<GenerateRequest>,
 ) -> (
     HeaderMap,
     Sse<impl Stream<Item = Result<Event, Infallible>>>,
@@ -341,9 +339,9 @@ async fn generate_stream(
     let start_time = Instant::now();
     metrics::increment_counter!("tgi_request_count");
 
-    tracing::debug!("Input: {}", req.0.inputs);
+    tracing::debug!("Input: {}", req.inputs);
 
-    let compute_characters = req.0.inputs.chars().count();
+    let compute_characters = req.inputs.chars().count();
 
     let mut headers = HeaderMap::new();
     headers.insert("x-compute-type", "gpu+optimized".parse().unwrap());
@@ -359,24 +357,24 @@ async fn generate_stream(
         let mut error = false;
 
         let mut add_prompt = None;
-        if req.0.parameters.return_full_text.unwrap_or(false) {
-            add_prompt = Some(req.0.inputs.clone());
+        if req.parameters.return_full_text.unwrap_or(false) {
+            add_prompt = Some(req.inputs.clone());
         }
-        let details = req.0.parameters.details;
+        let details = req.parameters.details;
 
-        let best_of = req.0.parameters.best_of.unwrap_or(1);
+        let best_of = req.parameters.best_of.unwrap_or(1);
         if best_of != 1 {
             let err = InferError::from(ValidationError::BestOfStream);
             metrics::increment_counter!("tgi_request_failure", "err" => "validation");
             tracing::error!("{err}");
             yield Ok(Event::from(err));
-        } else if req.0.parameters.decoder_input_details {
+        } else if req.parameters.decoder_input_details {
             let err = InferError::from(ValidationError::PrefillDetailsStream);
             metrics::increment_counter!("tgi_request_failure", "err" => "validation");
             tracing::error!("{err}");
             yield Ok(Event::from(err));
         } else {
-            match infer.generate_stream(req.0).instrument(info_span!(parent: &span, "async_stream")).await {
+            match infer.generate_stream(req).instrument(info_span!(parent: &span, "async_stream")).await {
                 // Keep permit as long as generate_stream lives
                 Ok((_permit, mut response_stream)) => {
                     // Server-Sent Event stream
@@ -493,10 +491,10 @@ async fn generate_stream(
 
 /// Prometheus metrics scrape endpoint
 #[utoipa::path(
-    get,
-    tag = "Text Generation Inference",
-    path = "/metrics",
-    responses((status = 200, description = "Prometheus Metrics", body = String))
+get,
+tag = "Text Generation Inference",
+path = "/metrics",
+responses((status = 200, description = "Prometheus Metrics", body = String))
 )]
 async fn metrics(prom_handle: Extension<PrometheusHandle>) -> String {
     prom_handle.render()
@@ -524,48 +522,46 @@ pub async fn run(
     allow_origin: Option<AllowOrigin>,
     ngrok: bool,
     ngrok_authtoken: Option<String>,
-    ngrok_domain: Option<String>,
-    ngrok_username: Option<String>,
-    ngrok_password: Option<String>,
+    ngrok_edge: Option<String>,
 ) -> Result<(), axum::BoxError> {
     // OpenAPI documentation
     #[derive(OpenApi)]
     #[openapi(
-        paths(
-            health,
-            get_model_info,
-            compat_generate,
-            generate,
-            generate_stream,
-            metrics,
-        ),
-        components(
-            schemas(
-                Info,
-                CompatGenerateRequest,
-                GenerateRequest,
-                GenerateParameters,
-                PrefillToken,
-                Token,
-                GenerateResponse,
-                BestOfSequence,
-                Details,
-                FinishReason,
-                StreamResponse,
-                StreamDetails,
-                ErrorResponse,
-            )
-        ),
-        tags(
-            (name = "Text Generation Inference", description = "Hugging Face Text Generation Inference API")
-        ),
-        info(
-            title = "Text Generation Inference",
-            license(
-                name = "Apache 2.0",
-                url = "https://www.apache.org/licenses/LICENSE-2.0"
-            )
-        )
+    paths(
+    health,
+    get_model_info,
+    compat_generate,
+    generate,
+    generate_stream,
+    metrics,
+    ),
+    components(
+    schemas(
+    Info,
+    CompatGenerateRequest,
+    GenerateRequest,
+    GenerateParameters,
+    PrefillToken,
+    Token,
+    GenerateResponse,
+    BestOfSequence,
+    Details,
+    FinishReason,
+    StreamResponse,
+    StreamDetails,
+    ErrorResponse,
+    )
+    ),
+    tags(
+    (name = "Text Generation Inference", description = "Hugging Face Text Generation Inference API")
+    ),
+    info(
+    title = "Text Generation Inference",
+    license(
+    name = "Apache 2.0",
+    url = "https://www.apache.org/licenses/LICENSE-2.0"
+    )
+    )
     )]
     struct ApiDoc;
 
@@ -685,10 +681,10 @@ pub async fn run(
         // Prometheus metrics route
         .route("/metrics", get(metrics))
         .layer(Extension(info))
-        .layer(Extension(health_ext))
+        .layer(Extension(health_ext.clone()))
         .layer(Extension(compat_return_full_text))
         .layer(Extension(infer))
-        .layer(Extension(prom_handle))
+        .layer(Extension(prom_handle.clone()))
         .layer(opentelemetry_tracing_layer())
         .layer(cors_layer);
 
@@ -696,32 +692,40 @@ pub async fn run(
         #[cfg(feature = "ngrok")]
         {
             use ngrok::config::TunnelBuilder;
-            use ngrok::tunnel::UrlTunnel;
 
             let _ = addr;
 
             let authtoken =
                 ngrok_authtoken.expect("`ngrok-authtoken` must be set when using ngrok tunneling");
 
-            let mut tunnel = ngrok::Session::builder()
+            let edge = ngrok_edge.expect("`ngrok-edge` must be set when using ngrok tunneling");
+
+            let tunnel = ngrok::Session::builder()
                 .authtoken(authtoken)
                 .connect()
                 .await
                 .unwrap()
-                .http_endpoint();
-
-            if let Some(domain) = ngrok_domain {
-                tunnel = tunnel.domain(domain);
-            }
-
-            if let (Some(username), Some(password)) = (ngrok_username, ngrok_password) {
-                tunnel = tunnel.basic_auth(username, password);
-            }
+                .labeled_tunnel()
+                .label("edge", edge);
 
             let listener = tunnel.listen().await.unwrap();
 
+            // Run prom metrics and health locally too
+            tokio::spawn(
+                axum::Server::bind(&addr)
+                    .serve(
+                        Router::new()
+                            .route("/health", get(health))
+                            .route("/metrics", get(metrics))
+                            .layer(Extension(health_ext))
+                            .layer(Extension(prom_handle))
+                            .into_make_service(),
+                    )
+                    //Wait until all requests are finished to shut down
+                    .with_graceful_shutdown(shutdown_signal()),
+            );
+
             // Run server
-            tracing::info!("Ingress URL: {:?}", listener.url());
             axum::Server::builder(listener)
                 .serve(app.into_make_service())
                 //Wait until all requests are finished to shut down
